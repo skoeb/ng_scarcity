@@ -9,6 +9,7 @@ Created on Wed Dec  4 10:14:22 2019
 import datetime
 import requests
 import json
+import os
 import concurrent.futures as cf
 
 # --- Package Imports ---
@@ -21,7 +22,7 @@ import config
 import helper_functions
 import api_functions
 import forecast_functions
-
+import stats_functions
 
 def data_gather_and_forecast(series_id, source, name, threshold=0.5, how='spline', scale=None):
     """
@@ -96,9 +97,6 @@ ng_reserves['recoverable_reserves'] = ng_reserves['reserves_ra'] * config.NG_REC
 ng_reserves = ng_reserves.loc[(ng_reserves['year'] >= config.START_YEAR) & (ng_reserves['year'] <= config.END_YEAR)]
 
 #%%
-import importlib
-
-importlib.reload(forecast_functions)
 
 # --- Merge NG Reserves with Consumption, Production ---
 dfs = [ng_production, ng_consumption, ng_reserves]
@@ -120,5 +118,30 @@ forecast = merged.groupby(['country','iso'], as_index=False).apply(forecast_func
 # --- Forecast Reserve Years Remaining ---
 forecast['prod_yrs_remaining'] = forecast['reserves_forecast'] / forecast['ng_production']
 forecast['cons_yrs_reserves'] = forecast['reserves_forecast'] / forecast['ng_consumption']
-    
-s = forecast.loc[forecast['country'].isin(['Philippines','Bangladesh','United States'])]
+
+# --- Drop Rows with Missing Values ---
+forecast = forecast.dropna(subset=['ng_production','ng_consumption','reserves_forecast'])
+
+# --- Join on historic ng prices ---
+forecast = helper_functions.join_historic_ng_price(forecast)
+
+#%%
+import importlib
+from sklearn.linear_model import LinearRegression
+from sklearn.model_selection import cross_val_score
+from sklearn import metrics
+ 
+importlib.reload(stats_functions)
+
+# --- Split in and out of sample X and y ---
+in_X, in_y, out_X = stats_functions.in_out_sample_X_y(forecast, y_column='ng_price')
+
+# --- Baseline OLS Regression ---
+model = LinearRegression()
+scores = cross_val_score(model, in_X, in_y, scoring='neg_mean_absolute_error', cv=5)
+ols_mean = scores.mean()
+print('Mean OLS RMSE: {}'.format(ols_mean))
+
+#%%
+# Henry Hub Cost per 1MT 152.83
+# PHL Dec 2019 9.24 $/MBTU

@@ -10,9 +10,13 @@ Created on Wed Dec  4 13:26:04 2019
 import pandas as pd
 import numpy as np
 import pycountry
+import pycountry_convert as pcc
  
 # --- Module Imports ---
 import config
+import api_functions
+
+pd.options.mode.chained_assignment = None
 
 
 def country_name_to_iso3(country_name):
@@ -97,3 +101,79 @@ def groupby_rolling_mean(df, value_name, merge_on=['country','iso'], periods=5, 
     df = df[merge_on + ['year', value_name, new_value_name]]
     
     return df
+
+def country_to_continent(country_name):
+    "Convert country name string to continent"
+    country_alpha2 = pcc.country_name_to_country_alpha2(country_name)
+    country_continent_code = pcc.country_alpha2_to_continent_code(country_alpha2)
+    country_continent_name = pcc.convert_continent_code_to_continent_name(country_continent_code)
+    return country_continent_name
+
+
+def join_historic_ng_price(df, source='BP', map_dict=config.BP_GAS_HUB_DICT, map_column='continent',
+                           scaler='gas_pump_price'):
+    """
+    Create a new 'ng_price' column for historical data points based on a mapping of a column
+    (i.e. continent) with a second datafame with annual prices.
+    
+    Inputs
+    ------
+    df - Contains a 'country' column and a 'year' column.
+    source - Only BP available now; see load_bp_ng_historical_prices()
+    map_dict - map of continents to most economically influential hub
+    map_column - column containing keys of map_dict
+    scaler - domestic column to scale regional hub ng price by
+    
+    Outputs
+    -------
+    Dataframe with historical gas prices added on as 'ng_price'
+    """
+    
+    if source == 'BP':
+        gas_price_df = api_functions.load_bp_ng_historical_prices()
+    else:
+        raise NotImplementedError
+        
+    if map_column == 'continent':
+        # --- Find Continent for each country ---
+        df['continent'] = df['country'].apply(country_to_continent)
+        df['hub'] = df[map_column].map(map_dict)
+    else:
+        raise NotImplementedError
+    
+    # --- merge on gas_price_df ---
+    df = df.merge(gas_price_df, on=['year','hub'], how='left')
+    
+    if scaler == 'gas_pump_price':
+        
+        # --- merge on scaler column ---
+        hub_country_dict = {'Netherlands':'ttf',
+                            'Japan':'jkm',
+                            'United States':'henryhub'}
+        
+        gasoline_pump_price = api_functions.get_gasoline_pump_price()
+        
+        df = df.merge(gasoline_pump_price, on=['year','country','iso'], how='left')
+        
+        # --- merge on country/hub column ---
+        hub_gasoline_pump_price = gasoline_pump_price.loc[gasoline_pump_price['country'].isin(list(hub_country_dict.keys()))]
+        hub_gasoline_pump_price['hub'] = hub_gasoline_pump_price['country'].map(hub_country_dict)
+        hub_gasoline_pump_price.rename({'gasoline_cost':'hub_gasoline_cost'}, axis='columns', inplace=True)
+        hub_gasoline_pump_price = hub_gasoline_pump_price[['year','hub','hub_gasoline_cost']]
+        
+        df = df.merge(hub_gasoline_pump_price, on=['year','hub'], how='left')
+        
+        # --- Scale based on gasoline cost ---
+        df['scaler'] = df['gasoline_cost'] / df['hub_gasoline_cost']
+        df['ng_price'] = df['scaler'] * df['hub_ng_price']
+        
+        # --- Clean up ---
+        df.loc[df['hub_ng_price'].isna(), ['hub_gasoline_cost','gasoline_cost','scaler']] = np.nan
+        
+        return df
+    
+    else:
+        df['ng_price'] = df['hub_ng_price']
+        return df
+        
+    

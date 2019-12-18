@@ -10,9 +10,11 @@ import datetime
 import requests
 import json
 import concurrent.futures as cf
+import os
 
 # --- Package Imports ---
 import pandas as pd
+import numpy as np
 import wbdata as wb
 import pycountry
     
@@ -135,3 +137,47 @@ def eia_query_for_countries(series_id, countries='all'):
     df = pd.concat(completed_dfs, axis='rows')
     
     return df
+
+def load_bp_ng_historical_prices():
+    """
+    Full Report on page 37: https://www.bp.com/content/dam/bp/business-sites/en/global/corporate/pdfs/energy-economics/statistical-review/bp-stats-review-2019-full-report.pdf
+    """
+    
+    df = pd.read_csv(os.path.join('prices','bp_ng_cost_million_btu.csv'))
+    df = df.fillna(np.nan)
+    
+    # -- Convert to price per meter cube ---
+    df = df.set_index('year')
+    df = df / config.METERS_CUBED_MBTU
+    
+    # --- Clean up ---
+    df['jkm'] = df['jkm'].fillna(df['japan'])
+    df = df[['jkm','ttf','henryhub']]
+    df = df.reset_index()
+    
+    # --- Make long ---
+    df = df.melt(id_vars='year', var_name='hub', value_name='hub_ng_price')
+    
+    return df
+
+def get_gasoline_pump_price():
+    """ Not currently used. """
+    df = wb_query('EP.PMP.SGAS.CD')
+
+    # --- Clean Results ---
+    df = helper_functions.filter_missing_data(df, how=0.2) #drop countries with >20% missing data
+    
+    # --- Clean up ---
+    df = df.rename({'value':'gasoline_cost'}, axis='columns')
+    df['iso'] = df['iso'].astype(str)
+    df = df.loc[~df['iso'].isin(['None',None,np.nan])]
+    
+    # --- Fill na ---
+    df = df.sort_values(['country','year'], ascending=True)
+    df['gasoline_cost'] = df.groupby(['country','iso'])['gasoline_cost'].apply(lambda x: x.ffill().bfill())
+    
+    # --- More clean up ---
+    df = df[['year','country','iso','gasoline_cost']]
+
+    return df
+
